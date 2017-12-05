@@ -18,6 +18,7 @@ lazy val root = (project in file(".")).
 	   "javax.inject" % "javax.inject" % "1",
 	   "com.neovisionaries" % "nv-websocket-client" % "2.3",
 	   "io.vertx" %% "vertx-lang-scala" % "3.5.0",
+	   "redis.clients" % "jedis" % "2.9.0",
       "com.typesafe.akka" %% "akka-http-testkit"    % akkaHttpVersion % Test,
       "com.typesafe.akka" %% "akka-testkit"         % akkaVersion     % Test,
       "com.typesafe.akka" %% "akka-stream-testkit"  % akkaVersion     % Test,
