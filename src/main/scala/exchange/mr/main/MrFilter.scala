@@ -27,6 +27,9 @@ object MrFilter extends App {
   println("Server idle-timeout " + conf.getString("akka.http.server.idle-timeout"))
   println("Server linger-timeout " + conf.getString("akka.http.server.linger-timeout"))
   println("Redis server " + conf.getString("redis.db.address") + ":" + conf.getInt("redis.db.port"))
+  
+  val nameSecretKey = conf.getString("entry.field.secret-key")
+  val nameApiKey = conf.getString("entry.field.api-key")
   var jedis = new Jedis(conf.getString("redis.db.address"), conf.getInt("redis.db.port"))
 
   val commandList = Seq(
@@ -72,9 +75,6 @@ object MrFilter extends App {
     val apiKey = (in \ "secret").as[String]
     val address = ((in \ "tx_json") \ "Account").as[String]
     val entry = jedis.hgetAll(address)
-    val nameSecretKey = conf.getString("entry.field.secret-key")
-    val nameApiKey = conf.getString("entry.field.api-key")
-
     if (!entry.isEmpty() && entry.containsKey(nameApiKey) && entry.get(nameApiKey) == apiKey) {
       Option(entry.get(nameApiKey))
     } else {
