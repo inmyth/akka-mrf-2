@@ -49,8 +49,8 @@ object MrFilter extends App {
     "path_find",
     "ripple_path_find",
     "submit",
-//    "sign",
-//    "submit_multisigned", // this cannot work with sign and submit mode 
+    //    "sign",
+    //    "submit_multisigned", // this cannot work with sign and submit mode
     "book_offers",
     "subscribe",
     "unsubscribe")
@@ -64,15 +64,22 @@ object MrFilter extends App {
     val validTransaction =
       Try(transactionList.contains(
         ((request \ "tx_json") \ "TransactionType").as[String])).getOrElse(false)
-        val noTxBlob = (request \ "tx_blob").isInstanceOf[JsUndefined]
+    val noTxBlob = (request \ "tx_blob").isInstanceOf[JsUndefined]
     (validCommand || validTransaction) && noTxBlob
   }
 
-  def getSecretKey(in: JsValue): String = {
+  def getSecretKey(in: JsValue): Option[String] = {
     val apiKey = (in \ "secret").as[String]
     val address = ((in \ "tx_json") \ "Account").as[String]
-    val secretFromDb = Option(jedis.get(apiKey))
-    if (!secretFromDb.isEmpty) secretFromDb.get else "sXXX"
+    val entry = jedis.hgetAll(address)
+    val nameSecretKey = conf.getString("entry.field.secret-key")
+    val nameApiKey = conf.getString("entry.field.api-key")
+
+    if (!entry.isEmpty() && entry.containsKey(nameApiKey) && entry.get(nameApiKey) == apiKey) {
+      Option(entry.get(nameApiKey))
+    } else {
+      Option("sXXX")
+    }
   }
 
   // Flows --
@@ -93,19 +100,15 @@ object MrFilter extends App {
     jvs map { jsValue =>
       {
         if ((jsValue \ "secret").isInstanceOf[JsDefined] && (jsValue \ "tx_json").isInstanceOf[JsDefined]) {
-          val secret = getSecretKey(jsValue)
-          println("secret" + secret)
+          val secret = getSecretKey(jsValue).get
           val updatedJsValue = jsValue.as[JsObject] + ("secret" -> Json.toJson(secret))
           updatedJsValue
-        } 
-        else {
+        } else {
           jsValue
         }
       }
     }
   }
-
-
 
   val jsValueToMessageFlow = Flow[Source[JsValue, _]] map { jsValueStream =>
     TextMessage.Streamed(jsValueStream.map(msg => {

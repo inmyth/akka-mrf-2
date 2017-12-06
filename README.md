@@ -36,8 +36,17 @@ Create application.conf. Important settings :
 - akka.http.server.idle-timeout = infinite to prevent disconnect. Put the file in `src/main/resources`. 
 - redis configuration
 
+User wallet should be stored with format 
+account -> ("apiKey" -> apikey, "secretKey" -> secretKey)
+
+where account is hash and apiKey and secretKey are fields. Use HSET. 
+
+
+
 
 
 This project also contains MrFilter2 in vertx.
+
+v.202 Matched against correct structure
 
 v.201 Working version
