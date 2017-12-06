@@ -19,28 +19,14 @@ import play.api.libs.json.JsDefined
 import play.api.libs.json.JsObject
 
 object MrFilter extends App {
-
-  //  val customConf = ConfigFactory.parseString("""
-  //  akka.actor.deployment {
-  //    /my-service {
-  //      router = round-robin-pool
-  //      nr-of-instances = 3
-  //    }
-  //  }
-  //  """)
-
-  //  val configFile = getClass.getClassLoader.getResource("application.conf").getFile
-  //  val config = ConfigFactory.parseFile(new File(configFile))
-
   implicit val system = ActorSystem("MrFilter-system")
   implicit val materializer = akka.stream.ActorMaterializer()
   import system.dispatcher
-  
 
   var conf = ConfigFactory.load("application.conf");
   println("Server idle-timeout " + conf.getString("akka.http.server.idle-timeout"))
   println("Server linger-timeout " + conf.getString("akka.http.server.linger-timeout"))
-  println("Server linger-timeout " + conf.getString("redis.db.address"))
+  println("Redis server " + conf.getString("redis.db.address") + ":" + conf.getInt("redis.db.port"))
   var jedis = new Jedis(conf.getString("redis.db.address"), conf.getInt("redis.db.port"))
 
   val commandList = Seq(
@@ -63,46 +49,38 @@ object MrFilter extends App {
     "path_find",
     "ripple_path_find",
     "submit",
-    "submit_multisigned",
+//    "sign",
+//    "submit_multisigned", // this cannot work with sign and submit mode 
     "book_offers",
     "subscribe",
-    "unsubscribe"
-  )
+    "unsubscribe")
 
   val transactionList = Seq(
     "OfferCreate",
-    "OfferCancel"
-  )
+    "OfferCancel")
 
   def isValidRequest(request: JsValue): Boolean = {
     val validCommand = Try(commandList.contains((request \ "command").as[String])).getOrElse(false)
     val validTransaction =
       Try(transactionList.contains(
-        ((request \ "tx_json") \ "TransactionType").as[String]
-      )).getOrElse(false)
-    val noTxBlob = (request \ "tx_blob").isInstanceOf[JsUndefined]
+        ((request \ "tx_json") \ "TransactionType").as[String])).getOrElse(false)
+        val noTxBlob = (request \ "tx_blob").isInstanceOf[JsUndefined]
     (validCommand || validTransaction) && noTxBlob
+  }
+
+  def getSecretKey(in: JsValue): String = {
+    val apiKey = (in \ "secret").as[String]
+    val address = ((in \ "tx_json") \ "Account").as[String]
+    val secretFromDb = Option(jedis.get(apiKey))
+    if (!secretFromDb.isEmpty) secretFromDb.get else "sXXX"
   }
 
   // Flows --
   val userFlow = Flow[Message]
 
-  val messageToJsValueFlow = Flow[Message] collect {
+  val messageToJsValueFlow = Flow[Message].collect {
     case message: TextMessage.Strict => message.textStream.map(Json.parse(_)) collect {
-      case jsValue if (isValidRequest(jsValue)) => {
-        if ((jsValue\"secret").isInstanceOf[JsDefined]){
-          val apiKey          = (jsValue \ "secret").as[String]
-          val address         = ((jsValue \ "tx_json") \ "Account").as[String] 
-          val secretFromDb    = jedis.get(apiKey)
-          val secret = if (secretFromDb != null) secretFromDb else "sXXX"
-          val updatedJsValue  = jsValue.as[JsObject] + ("secret" -> Json.toJson(secret))
-          println(updatedJsValue)
-          updatedJsValue
-        }
-        else {
-          jsValue
-        }
-      }
+      case jsValue if (isValidRequest(jsValue)) => jsValue
       case _ => Json.obj("command" -> "")
     } recover {
       case e: Exception =>
@@ -111,16 +89,26 @@ object MrFilter extends App {
     }
   }
 
-//  val mapper: JsValue => Future[JsValue] = (jv: JsValue) => Future(Json.obj("a" -> ""))
-//  
-//  val yourFlow = Flow[JsValue].mapAsync[JsValue](5)(mapper)
-//  
-//  val dbFlow   = Flow[JsValue] map(jv => {
-//    Json.obj("aaa" -> "a")   
-//  })
-  
+  val apiKeyFlow = Flow[Source[JsValue, _]] map { jvs =>
+    jvs map { jsValue =>
+      {
+        if ((jsValue \ "secret").isInstanceOf[JsDefined] && (jsValue \ "tx_json").isInstanceOf[JsDefined]) {
+          val secret = getSecretKey(jsValue)
+          println("secret" + secret)
+          val updatedJsValue = jsValue.as[JsObject] + ("secret" -> Json.toJson(secret))
+          updatedJsValue
+        } 
+        else {
+          jsValue
+        }
+      }
+    }
+  }
+
+
+
   val jsValueToMessageFlow = Flow[Source[JsValue, _]] map { jsValueStream =>
-    TextMessage.Streamed(jsValueStream.map(msg => { //TODO Filter "XRP" out
+    TextMessage.Streamed(jsValueStream.map(msg => {
       Json.stringify(msg)
     }))
   }
@@ -129,7 +117,8 @@ object MrFilter extends App {
 
   def handlerFlow =
     userFlow via
-      messageToJsValueFlow.async via
+      messageToJsValueFlow via
+      apiKeyFlow.async via
       jsValueToMessageFlow via
       rippledFlow
 
