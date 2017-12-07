@@ -14,7 +14,6 @@ import java.io.File
 import akka.http.scaladsl.settings.ConnectionPoolSettings
 import scala.concurrent.duration._
 import play.api.libs.json.JsUndefined
-import redis.clients.jedis.Jedis
 import play.api.libs.json.JsDefined
 import play.api.libs.json.JsObject
 
@@ -24,13 +23,15 @@ object MrFilter extends App {
   import system.dispatcher
 
   var conf = ConfigFactory.load("application.conf");
+  
+  val sinkUrl     = conf.getString("filter.sink.url")
+  val sourceHost  = conf.getString("filter.source.host")
+  val sourcePort  = conf.getInt("filter.source.port")
+  val sourcePath  = conf.getString("filter.source.path")
+  
+  println(s"$sourceHost:$sourcePort$sourcePath -> $sinkUrl")
   println("Server idle-timeout " + conf.getString("akka.http.server.idle-timeout"))
   println("Server linger-timeout " + conf.getString("akka.http.server.linger-timeout"))
-  println("Redis server " + conf.getString("redis.db.address") + ":" + conf.getInt("redis.db.port"))
-  
-  val nameSecretKey = conf.getString("entry.field.secret-key")
-  val nameApiKey = conf.getString("entry.field.api-key")
-  var jedis = new Jedis(conf.getString("redis.db.address"), conf.getInt("redis.db.port"))
 
   val commandList = Seq(
     "account_currencies",
@@ -52,8 +53,8 @@ object MrFilter extends App {
     "path_find",
     "ripple_path_find",
     "submit",
-    //    "sign",
-    //    "submit_multisigned", // this cannot work with sign and submit mode
+    "sign",
+    "submit_multisigned", // this cannot work with sign and submit mode
     "book_offers",
     "subscribe",
     "unsubscribe")
@@ -67,20 +68,9 @@ object MrFilter extends App {
     val validTransaction =
       Try(transactionList.contains(
         ((request \ "tx_json") \ "TransactionType").as[String])).getOrElse(false)
-    val noTxBlob = (request \ "tx_blob").isInstanceOf[JsUndefined]
-    (validCommand || validTransaction) && noTxBlob
+    (validCommand || validTransaction)
   }
 
-  def getSecretKey(in: JsValue): Option[String] = {
-    val apiKey = (in \ "secret").as[String]
-    val address = ((in \ "tx_json") \ "Account").as[String]
-    val entry = jedis.hgetAll(address)
-    if (!entry.isEmpty() && entry.containsKey(nameApiKey) && entry.get(nameApiKey) == apiKey) {
-      Option(entry.get(nameApiKey))
-    } else {
-      Option("sXXX")
-    }
-  }
 
   // Flows --
   val userFlow = Flow[Message]
@@ -91,49 +81,35 @@ object MrFilter extends App {
       case _ => Json.obj("command" -> "")
     } recover {
       case e: Exception =>
-        println(e)
+//        println(e)
         Json.obj("command" -> "")
     }
   }
 
-  val apiKeyFlow = Flow[Source[JsValue, _]] map { jvs =>
-    jvs map { jsValue =>
-      {
-        if ((jsValue \ "secret").isInstanceOf[JsDefined] && (jsValue \ "tx_json").isInstanceOf[JsDefined]) {
-          val secret = getSecretKey(jsValue).get
-          val updatedJsValue = jsValue.as[JsObject] + ("secret" -> Json.toJson(secret))
-          updatedJsValue
-        } else {
-          jsValue
-        }
-      }
-    }
-  }
 
   val jsValueToMessageFlow = Flow[Source[JsValue, _]] map { jsValueStream =>
     TextMessage.Streamed(jsValueStream.map(msg => {
       Json.stringify(msg)
     }))
   }
-
-  def rippledFlow = Http().webSocketClientFlow(WebSocketRequest("wss://rippled.mr.exchange"))
+  
+  def rippledFlow = Http().webSocketClientFlow(WebSocketRequest(sinkUrl))
 
   def handlerFlow =
     userFlow via
       messageToJsValueFlow via
-      apiKeyFlow.async via
       jsValueToMessageFlow via
       rippledFlow
 
   // Start listing --
   val binding = Http().bindAndHandleSync({
-    case request @ HttpRequest(GET, Uri.Path("/socket"), _, _, _) =>
+    case request @ HttpRequest(GET, Uri.Path(sourcePath), _, _, _) =>
       request
         .header[UpgradeToWebSocket]
         .map(_.handleMessages(handlerFlow))
         .getOrElse(HttpResponse(StatusCodes.BadRequest))
     case _ => HttpResponse(StatusCodes.NotFound)
-  }, "localhost", 8080)
+  }, sourceHost, sourcePort)
 
   // Waiting --
   println(s"Press return to shutdown")
